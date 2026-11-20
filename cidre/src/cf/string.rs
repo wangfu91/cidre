@@ -348,6 +348,26 @@ impl AsRef<ns::Id> for String {
     }
 }
 
+/// Creates a static CFString from an ASCII C string literal.
+///
+/// Use [`String::from_str`] for Unicode text.
+///
+/// ```
+/// let value = cidre::cf::str!(c"Settings");
+/// assert_eq!(value.to_string(), "Settings");
+/// ```
+///
+/// ```compile_fail
+/// let _ = cidre::cf::str!(c"设置");
+/// ```
+///
+/// ```compile_fail
+/// let _ = cidre::cf::str!(c"\xFF");
+/// ```
+///
+/// ```compile_fail
+/// let _ = cidre::cf::str!(c"\u{2026}");
+/// ```
 #[macro_export]
 macro_rules! cfstr {
     ($f:literal) => {{
@@ -356,6 +376,10 @@ macro_rules! cfstr {
         }
         // #[link_section = "__TEXT,__cstring,cstring_literals"]
         const VALUE: &std::ffi::CStr = $f;
+        const _: () = assert!(
+            VALUE.to_bytes().is_ascii(),
+            "cf::str! and ns::str! require an ASCII C string literal"
+        );
 
         // #[link_section = "__DATA,__cfstring"]
         static STR: $crate::cf::string::ConstStr = unsafe {
