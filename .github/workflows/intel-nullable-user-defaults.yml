@@ -1,0 +1,75 @@
+name: Intel Release nullable UserDefaults
+
+on:
+  push:
+    branches: [codex/intel-nullable-retain]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-regression:
+    name: ${{ matrix.revision.name }}
+    runs-on: macos-26-intel
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        revision:
+          - name: Previous MusicFlow pin
+            sha: 1d8251c45ed3ae559c8e86c3c7d3dc554a534c9d
+            expect: fail
+          - name: Upstream before the fix
+            sha: 5f27519e061e3cf4f14c0588962cb9b39f41dbb9
+            expect: fail
+          - name: Upstream with the fix
+            sha: ${{ github.sha }}
+            expect: pass
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify Intel runner and install the Rust toolchain
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          sw_vers
+          xcodebuild -version
+          rustup toolchain install 1.100.0 --profile minimal --target x86_64-apple-darwin
+          rustc +1.100.0 --version
+      - name: Run the same optimized missing-key test
+        env:
+          TEST_REVISION: ${{ matrix.revision.sha }}
+          EXPECTED_RESULT: ${{ matrix.revision.expect }}
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1'
+          MACOSX_DEPLOYMENT_TARGET: '15.0'
+        run: |
+          set -euo pipefail
+          test_source=cidre/tests/nullable_user_defaults.rs
+          checkout="$RUNNER_TEMP/cidre-test-revision"
+          git worktree add --detach "$checkout" "$TEST_REVISION"
+          mkdir -p "$checkout/cidre/tests"
+          cp "$test_source" "$checkout/$test_source"
+          cd "$checkout"
+          git rev-parse HEAD
+
+          outcome="$RUNNER_TEMP/nullable-defaults.log"
+          result=0
+          cargo +1.100.0 test --release --target x86_64-apple-darwin -p cidre \
+            --no-default-features --features ns,macos_15_0 --test nullable_user_defaults \
+            -- --exact missing_defaults_returns_none --nocapture >"$outcome" 2>&1 || result=$?
+          cat "$outcome"
+
+          # A compile failure, skipped test or unrelated failure provides no regression evidence.
+          grep -Fq 'checking missing UserDefaults value' "$outcome"
+          if [[ "$EXPECTED_RESULT" == pass ]]; then
+            test "$result" -eq 0
+            grep -Fq '1 passed; 0 failed' "$outcome"
+          else
+            test "$result" -ne 0
+            grep -Eq 'missing (string|object)ForKey must return None|signal: 11, SIGSEGV' "$outcome"
+          fi
